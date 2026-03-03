@@ -2,17 +2,17 @@
 SimpleAntiAliasing.fuse
 Author: Abi Yasid Al'Majid
 License: MIT
-Version: 1.1
+Version: 1.0
 Description:
-    A Simple Anti-Aliasing Fuse that reduces jagged edges using an iterative 
-    seed-grow-propagate-blend algorithm.
---]]--
+    A Simple Anti-Aliasing Fuse that reduces jagged edges using an iterative seed-grow-propagate-blend algorithm.
+--]] --
 
 FuRegisterClass("SimpleAntiAliasing", CT_Tool, {
     REGS_Name = "Simple Anti-Aliasing",
-    REGS_Category = "ACustomTools",
+    REGS_Category = "ACTProjects",
     REGS_OpIconString = "SAA",
     REGS_OpDescription = "Simple Anti-Aliasing Fuse that reduces jagged edges in images.",
+    REG_NoMotionBlurCtrls = true,
 })
 
 -- Defines the C-style struct for passing parameters from Lua to the GPU
@@ -29,7 +29,7 @@ SimpleAA_Source = [[
     __DEVICE__ float get_diff(float4 p1, float4 p2) {
         return _fabs(p1.x - p2.x) + _fabs(p1.y - p2.y) + _fabs(p1.z - p2.z) + _fabs(p1.w - p2.w);
     }
-    
+
     // Helper: Calculates Luminance (brightness) of a pixel
     // Used for directional neighbor detection in blending.
     __DEVICE__ float GetLuma(float4 c) {
@@ -71,7 +71,7 @@ SimpleAA_Source = [[
         if (x >= params->srcsize[0] || y >= params->srcsize[1]) return;
 
         float4 self = _tex2DVec4(prev_mask, x, y);
-        
+
         // If already active, keep the value
         if (self.x > 0.5f) {
             _tex2DVec4Write(dst, x, y, to_float4(self.x, self.y, self.y, 1.0f));
@@ -160,8 +160,7 @@ SimpleAA_Source = [[
         float total_length = m.z;
         float weight = 0.0f;
 
-        // Special handling for diagonal dots (length < 1) -> Fixed 25% blend
-        if (total_length < 0.5f) {
+        if (my_dist < 0.1f && total_length <= 1.0f) {
             weight = 0.25f;
         } else {
             float ratio = my_dist / total_length;
@@ -177,7 +176,7 @@ SimpleAA_Source = [[
         // Find the neighbor with the highest contrast to blend with
         float diffV = get_diff(cN, cS);
         float diffH = get_diff(cW, cE);
-        
+
         float4 neighbor;
         if (diffV > diffH) {
             if (get_diff(cN, c) > get_diff(cS, c)) neighbor = cN; else neighbor = cS;
@@ -244,14 +243,17 @@ function Process(req)
 
     if not src then return end
 
-    local texA = Image({IMG_Like = src})
-    local texB = Image({IMG_Like = src})
-    local dst = Image({IMG_Like = src})
+    local texA = Image({ IMG_Like = src })
+    local texB = Image({ IMG_Like = src })
+    local dst = Image({ IMG_Like = src })
 
     -- STEP 1: SEED
     local nodeSeed = DVIPComputeNode(req, "SeedKernel", SimpleAA_Source, "SimpleAA_Params", SimpleAA_Params)
-    if not nodeSeed then OutImage:Set(req, src) return end
-    
+    if not nodeSeed then
+        OutImage:Set(req, src)
+        return
+    end
+
     local pBlock = nodeSeed:GetParamBlock(SimpleAA_Params)
     pBlock.threshold = thresh
     pBlock.iter_limit = limit
@@ -267,7 +269,7 @@ function Process(req)
     -- STEP 2: GROW
     local curr_in = texA
     local curr_out = texB
-    
+
     for i = 1, limit do
         local nodeGrow = DVIPComputeNode(req, "GrowKernel", SimpleAA_Source, "SimpleAA_Params", SimpleAA_Params)
         nodeGrow:SetParamBlock(pBlock)
@@ -296,7 +298,10 @@ function Process(req)
         curr_out = temp
     end
 
-    if view == 1 then OutImage:Set(req, curr_in) return end
+    if view == 1 then
+        OutImage:Set(req, curr_in)
+        return
+    end
 
     -- STEP 4: BLEND
     local nodeBlend = DVIPComputeNode(req, "BlendKernel", SimpleAA_Source, "SimpleAA_Params", SimpleAA_Params)
