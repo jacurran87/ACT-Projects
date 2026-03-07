@@ -4,7 +4,7 @@
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Mac%20%7C%20Linux-lightgrey?style=flat-square)
 
-**ACT Projects** is a DaVinci Resolve custom tools project primarily for animation
+**ACT Projects** (Abi's Custom Tools) is a DaVinci Resolve custom tools project primarily for animation
 compositing.
 
 ## Download
