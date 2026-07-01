@@ -1,0 +1,412 @@
+--[[--
+ACT-SimpleAntiAliasing.fuse
+Author: Abi Yasid Al'Majid
+License: MIT
+Version: 1.0
+Description:
+    Smooths out jagged edges by detecting high-contrast pixels and blending them along the edge line.
+--]] --
+
+FuRegisterClass("SimpleAntiAliasing", CT_Tool, {
+    REGS_Name = "Simple Anti-Aliasing",
+    REGS_Category = "ACTProjects\\Image",
+    REGS_OpIconString = "ACT-SAA",
+    REGS_OpDescription = "Smooths out jagged edges by detecting high-contrast pixels and blending them along the edge line",
+    REG_NoObjMatCtrls = true,
+    REG_NoMotionBlurCtrls = true,
+    REG_Fuse_NoEdit = true,
+    REG_Fuse_NoReload = true,
+    REG_Version = 1.0,
+})
+
+SimpleAA_Params = [[
+    float threshold;
+    int srcsize[2];
+    int iter_limit;
+]]
+
+SimpleAA_Source = [[
+    // Helper: Calculates Manhattan distance between two pixels (including Alpha)
+    // Used to determine contrast difference.
+    __DEVICE__ float get_diff(float4 p1, float4 p2) {
+        return _fabs(p1.x - p2.x) + _fabs(p1.y - p2.y) + _fabs(p1.z - p2.z) + _fabs(p1.w - p2.w);
+    }
+
+    // Helper: Calculates Luminance (brightness) of a pixel
+    // Used for directional neighbor detection in blending.
+    __DEVICE__ float GetLuma(float4 c) {
+        return dot(to_float3(c.x, c.y, c.z), to_float3(0.299f, 0.587f, 0.114f));
+    }
+
+    // KERNEL 1: Seed Detection
+    // Identifies high-contrast pixels ("jaggies") and marks them as the starting point (Seed).
+    // Output Channel R = 1.0 (Active), G = 0 (Distance), B = 0 (Max Length).
+    __KERNEL__ void SeedKernel(__CONSTANTREF__ SimpleAA_Params *params, __TEXTURE2D__ src, __TEXTURE2D_WRITE__ dst)
+    {
+        DEFINE_KERNEL_ITERATORS_XY(x, y)
+        if (x >= params->srcsize[0] || y >= params->srcsize[1]) return;
+
+        float4 c = _tex2DVec4(src, x, y);
+        float th = params->threshold;
+
+        float i1 = (get_diff(c, _tex2DVec4(src, x - 1, y)) > th) ? 1.0f : 0.0f;
+        float i2 = (get_diff(c, _tex2DVec4(src, x + 1, y)) > th) ? 1.0f : 0.0f;
+        float i3 = (get_diff(c, _tex2DVec4(src, x, y - 1)) > th) ? 1.0f : 0.0f;
+        float i4 = (get_diff(c, _tex2DVec4(src, x, y + 1)) > th) ? 1.0f : 0.0f;
+
+        float sum = i1 + i2 + i3 + i4;
+        float is_straight = _fmaxf(i1 * i2, i3 * i4);
+        float is_jaggies = 0.0f;
+
+        if (sum > 2.5f) is_jaggies = 1.0f;
+        else if (sum > 1.5f) is_jaggies = 1.0f - is_straight;
+
+        _tex2DVec4Write(dst, x, y, to_float4(is_jaggies, 0.0f, 0.0f, 1.0f));
+    }
+
+    // KERNEL 2: Mask Growth (Forward)
+    // Iteratively expands the mask from the Seed along the edge direction.
+    // Records the distance from the seed in the Green channel.
+    __KERNEL__ void GrowKernel(__CONSTANTREF__ SimpleAA_Params *params, __TEXTURE2D__ src_img, __TEXTURE2D__ prev_mask, __TEXTURE2D_WRITE__ dst)
+    {
+        DEFINE_KERNEL_ITERATORS_XY(x, y)
+        if (x >= params->srcsize[0] || y >= params->srcsize[1]) return;
+
+        float4 self = _tex2DVec4(prev_mask, x, y);
+
+        // If already active, keep the value
+        if (self.x > 0.5f) {
+            _tex2DVec4Write(dst, x, y, to_float4(self.x, self.y, self.y, 1.0f));
+            return;
+        }
+
+        float4 m_l = _tex2DVec4(prev_mask, x - 1, y); float4 m_r = _tex2DVec4(prev_mask, x + 1, y);
+        float4 m_t = _tex2DVec4(prev_mask, x, y - 1); float4 m_b = _tex2DVec4(prev_mask, x, y + 1);
+
+        float n_l = (m_l.x > 0.5f) ? 1.0f : 0.0f; float n_r = (m_r.x > 0.5f) ? 1.0f : 0.0f;
+        float n_t = (m_t.x > 0.5f) ? 1.0f : 0.0f; float n_b = (m_b.x > 0.5f) ? 1.0f : 0.0f;
+        float active_neighbors = n_l + n_r + n_t + n_b;
+
+        // Growth Condition: Only grow if exactly 1 neighbor is active (avoids blobs)
+        if (active_neighbors < 0.5f || active_neighbors > 1.5f) {
+            _tex2DVec4Write(dst, x, y, to_float4(0.0f, 0.0f, 0.0f, 0.0f));
+            return;
+        }
+
+        float4 c = _tex2DVec4(src_img, x, y);
+        float th = params->threshold;
+        float edge_l = (get_diff(c, _tex2DVec4(src_img, x-1, y)) > th) ? 1.0f : 0.0f;
+        float edge_r = (get_diff(c, _tex2DVec4(src_img, x+1, y)) > th) ? 1.0f : 0.0f;
+        float edge_t = (get_diff(c, _tex2DVec4(src_img, x, y-1)) > th) ? 1.0f : 0.0f;
+        float edge_b = (get_diff(c, _tex2DVec4(src_img, x, y+1)) > th) ? 1.0f : 0.0f;
+
+        float should_grow = 0.0f;
+        float parent_dist = 0.0f;
+
+        // Check perpendicularity to ensure we are following the edge
+        if (n_l > 0.5f && (edge_t > 0.5f || edge_b > 0.5f)) { should_grow = 1.0f; parent_dist = m_l.y; }
+        else if (n_r > 0.5f && (edge_t > 0.5f || edge_b > 0.5f)) { should_grow = 1.0f; parent_dist = m_r.y; }
+        else if (n_t > 0.5f && (edge_l > 0.5f || edge_r > 0.5f)) { should_grow = 1.0f; parent_dist = m_t.y; }
+        else if (n_b > 0.5f && (edge_l > 0.5f || edge_r > 0.5f)) { should_grow = 1.0f; parent_dist = m_b.y; }
+
+        if (should_grow > 0.5f) {
+            _tex2DVec4Write(dst, x, y, to_float4(1.0f, parent_dist + 1.0f, parent_dist + 1.0f, 1.0f));
+        } else {
+            _tex2DVec4Write(dst, x, y, to_float4(0.0f, 0.0f, 0.0f, 0.0f));
+        }
+    }
+
+    // KERNEL 3: Length Propagation (Backward)
+    // Spreads the "Max Length" (Blue Channel) from the tip of the line back to the seed.
+    // Includes a check to prevent length bleeding from longer branches to shorter ones.
+    __KERNEL__ void PropagateKernel(__CONSTANTREF__ SimpleAA_Params *params, __TEXTURE2D__ prev_mask, __TEXTURE2D_WRITE__ dst)
+    {
+        DEFINE_KERNEL_ITERATORS_XY(x, y)
+        if (x >= params->srcsize[0] || y >= params->srcsize[1]) return;
+
+        float4 self = _tex2DVec4(prev_mask, x, y);
+        if (self.x < 0.5f) {
+            _tex2DVec4Write(dst, x, y, self);
+            return;
+        }
+
+        float current_max = self.z;
+        float4 n;
+
+        // Only accept max length from neighbors that are further away from the seed (n.y > self.y)
+        n = _tex2DVec4(prev_mask, x-1, y); if (n.x > 0.5f && n.y > self.y) current_max = _fmaxf(current_max, n.z);
+        n = _tex2DVec4(prev_mask, x+1, y); if (n.x > 0.5f && n.y > self.y) current_max = _fmaxf(current_max, n.z);
+        n = _tex2DVec4(prev_mask, x, y-1); if (n.x > 0.5f && n.y > self.y) current_max = _fmaxf(current_max, n.z);
+        n = _tex2DVec4(prev_mask, x, y+1); if (n.x > 0.5f && n.y > self.y) current_max = _fmaxf(current_max, n.z);
+
+        _tex2DVec4Write(dst, x, y, to_float4(self.x, self.y, current_max, 1.0f));
+    }
+
+    // KERNEL 4: Edge Mask (View Mode)
+    // Edge detection mask view.
+    __KERNEL__ void OverlayKernel(__CONSTANTREF__ SimpleAA_Params *params, __TEXTURE2D__ src_img, __TEXTURE2D__ mask, __TEXTURE2D_WRITE__ dst)
+    {
+        DEFINE_KERNEL_ITERATORS_XY(x, y)
+        if (x >= params->srcsize[0] || y >= params->srcsize[1]) return;
+
+        float4 m = _tex2DVec4(mask, x, y);
+        float4 c = _tex2DVec4(src_img, x, y);
+
+        if (m.x > 0.5f) {
+            _tex2DVec4Write(dst, x, y, to_float4(1.0f, 0.0f, 0.0f, c.w));
+        } else {
+            _tex2DVec4Write(dst, x, y, to_float4(c.x * 0.5f, c.y * 0.5f, c.z * 0.5f, c.w));
+        }
+    }
+
+    // KERNEL 5: Blending
+    // Calculates the final pixel color by mixing the original pixel with its neighbor.
+    // The mix ratio (weight) depends on the pixel's position relative to the total line length.
+    __KERNEL__ void BlendKernel(__CONSTANTREF__ SimpleAA_Params *params, __TEXTURE2D__ src_img, __TEXTURE2D__ mask, __TEXTURE2D_WRITE__ dst)
+    {
+        DEFINE_KERNEL_ITERATORS_XY(x, y)
+        if (x >= params->srcsize[0] || y >= params->srcsize[1]) return;
+
+        float4 m = _tex2DVec4(mask, x, y);
+        float4 c = _tex2DVec4(src_img, x, y);
+
+        if (m.x < 0.5f) {
+            _tex2DVec4Write(dst, x, y, c);
+            return;
+        }
+
+        float my_dist = m.y;
+        float total_length = m.z;
+        float weight = 0.0f;
+
+        if (my_dist < 0.1f && total_length <= 1.0f) {
+            weight = 0.25f;
+        } else {
+            float ratio = my_dist / total_length;
+            weight = 0.5f * (1.0f - ratio);
+            weight = _clampf(weight, 0.0f, 0.5f);
+        }
+
+        float4 cN = _tex2DVec4(src_img, x, y-1);
+        float4 cS = _tex2DVec4(src_img, x, y+1);
+        float4 cW = _tex2DVec4(src_img, x-1, y);
+        float4 cE = _tex2DVec4(src_img, x+1, y);
+
+        // Find the neighbor with the highest contrast to blend with
+        float diffV = get_diff(cN, cS);
+        float diffH = get_diff(cW, cE);
+
+        float4 neighbor;
+        if (diffV > diffH) {
+            if (get_diff(cN, c) > get_diff(cS, c)) neighbor = cN; else neighbor = cS;
+        } else {
+            if (get_diff(cW, c) > get_diff(cE, c)) neighbor = cW; else neighbor = cE;
+        }
+
+        float4 final;
+        final.x = c.x * (1.0f - weight) + neighbor.x * weight;
+        final.y = c.y * (1.0f - weight) + neighbor.y * weight;
+        final.z = c.z * (1.0f - weight) + neighbor.z * weight;
+        final.w = c.w * (1.0f - weight) + neighbor.w * weight;
+
+        _tex2DVec4Write(dst, x, y, final);
+    }
+]]
+
+ACTLogo = [[
+    <center><img width="300" src='data:image/png;base64, iVBORw0KGgoAAAANSUhEUgAAASwAAAAsCAYAAADfCoXBAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAOdEVYdFNvZnR3YXJlAEZpZ21hnrGWYwAACaRJREFUeAHtnf9127YTwM993/+/7gRGJogzQZgJ6k4QdYIoE4iZwM4EUidIMoGYCexMQHaCuBNccQUUsTJwOJAgJTn3eQ/PeSKAw8/D4QAyAIqiKIqiKIqiKIqiKIqiKIqiKIqiKIqiKIqiKIqiKMpPwQWMBBEv7Z/ryOPHi4uLByiIl3djw5UNxoZLHzqSZ8NXGx6s3C6S/trHL012XRNtF6Pzsh5zEllZFeTRDZEjKMeuzi9hX3cDru86H74OaMsKhvOk7wb2DUcXG5MhxraTTW98/OJYmU3sGTM/++X+Bm6OFh1bImwB1xjnu69ACTmVDVuUc2/D20A+LU7DGjJBV6ehUNt+wkAdI7LGyNmSHHSTYBC+rrc+PwmtDUupTBzHNpDfAssi7ach7VTjQTshPy9HwZR7i3lsceS4yoIECQr1DkZg019jfkP0afsNgs9HYfVpMTEhsBw1ZGDjX+K4ydPasBTIGcPRFRYWbiecSWGhK/cnHEeLQgv5FxjHShDnBgaCrgPubahgOMYGapAani/Ghg0OUJoDWOHBIhAD3fab+m8BwzE2kMWxxkLW+qlRuJ1uYSZ8f1C5B89xjwG3VUzyPxiIH7CSgpIVUXH73kj+NcgUohSaaPPvmeeFrALyMfwB02Js2FpZr2J+CD8JyXIppWQWNpC1/eYovo+J8POoZDstZ1TspBwNjGcj9e+NsbAqkDdyluLx5mFJZfUja3j+kNIau+JJMDYEt/t+En6C8ocbpARnsyCmZgJlNRu+7AtB1A72B2IxNiBksIUFeQpFbGX51UGytWls+GxD/5SkAteI5iAuNdbSyv/Tb8FjA4R+5/wlNfPsG5Tl3zIf/LY7OaqAX9lIkXwGOUv474C69PnfAC+HVvOPAYtHsvI28LT/bgQySSE31JcHv1fA8wrKKbsG+LEQIjQ+aA4Z4KH22bXTrp1pDFA7VYH4tW2bD37R6uLZ/tvnsXmwgfQWjfNNd+Dm4bf+2PBz+6V/VoHfCto4X2FKcJhDUjRY0J14pBx0rxN5rHrxv/vtiUQ2e4gAhUHe6d4y6cjRuUGeq4M04rgH6VaJtG8P4qfGBvUHawEKZGafPiPf1rlO99G+QixwYOXL2Pbii40I5A+fXgvSb5n00hPReXYDTGHpKkHsxEA0yBINSc8MCMB9Z4ri+zRnobB82kvkj74PFQnHVULWlkl7mxGXkC4et4l8sk6f8fQU1hoL1A/dmG1RqCR66VpG9liF9RtMRLYPC51/qYo8vrPhY+QZKavUilEBbyLXUuecjUeOvBc5l/XOCW9qd0wUA+V4YJ79WITQLQ4VE7eWXgi18d4DX7/pV+Zp4cpPY/cjCPDj+1Vgi3xM7nIVqJQhPqxYQWgCfaGJZAvbQHjgxnweOzjN3J1Yp5wCjzAPUjlVIo/c/rvzISjLjqXLI50Y0mmldPv1eKh8/MLM7TY+QAZHagNaeKrIMwPumk3t4zXg/FkNjCRLYSF/MvC513DkJKwCcaiTSCnFBi63XchxIv8sGOZZyUFcgUzOSybewwBrl8bJHfPcAG/9TcU1yF/b6eDprqN0Ox2DL8AfUBEG9oc3pD/oTwNuLn8ZUs/cLSG3qvRXBRposQmzgGF0oPzAr16GiVJkIqO7vFuBTM6lMJ4IwbaX9b2dMFw7HcNaysZbSzXkU4FbhFrvBzMZaeUWFjqHeRV53PS1pd8WbiCsgbkrDgbinEVHlgTDrysYcNvyikmae1RMW5wXATnkfF0k0krlTNF/WSeFZ0IHZ4K/PkH/rGEYFTjF9cHmVUsS5GwJufsxm8BvnMlIlloT+L1jZDzHwclhwF0qHEINeQzdbm8yzHoDw+D6vYPnh4Ezwist2lHRyWkFw1jZPMjXd5eKmKOwYttBWjm/Bky7Dtw2ILTXJyvrOnBixK3CUp/Bz85chxMdPHUOc/1nIBM/pjiF9Tcch0eQW4xd4Le/mPhnN879ovXG9xf5qGOXWjlIaW2KHCBg+TfXiduAnHdM/GKfqmHqeUr3sIbQYsQngGVpQ3IwPU5yL3ty+X3PzOtk7mGh+wIJRwUTgyPvYQllUD1pTtPdTMnncpL3t6RO9ynuVNCAOBzA3OstyXtch+Azfbs/ApnTr2Y4YWpseBORk9pa5tzENon4DZwpfmfBWRK5794aOEGonnSlw4bfbfjV/kR360btopIKC9OXAYfyRAF5R3zHpKF7XNKb0jU4h94kF9hOBOp8UlR0iPF+hvs4lP8fMaXo5TdM+mVGf6TeR/yPckRnHS+Z+NxVgmMc6HD+mgqFn0Py8+Eej/T5pJz55X1UG5gSnPBDYBgw61H2LtqSKS8N3MPXg5bCup7SlpDq+TYSfsPE6zQBWRyU5+teaJm42xF12lEz6akPton0bSBNy+WNfJ1C7onJtoS9Mqe2SWuMb/Hp1ax6aLmwwJaw10ZbFG5jkdcnyR3URSJzY/+w77QVYHHoJEY3KapEug7cak7mNTlfr3yaWLrk0WmqvjY92165+E6OKQBynr+AQtBoYB4bK+svYbmI99yJDjoFkFokOsjrvz5V/9qGlUcfketb3htwp9Qd7D+DUzH53dj8vvR/oMkI8a+G7L6gkEMXGOe09asFaXdfa6A++j/sv9YQcnk0NvyesrbRKX0TeVxJrsUE8ui8/F3bd/6Kk4H9BVJOKYnkcgW6TWj/K2FYMfmEHJ6S1WcIy0R9z+bl5wGyOK4C8VdMfOobw8ii1b/FaVgdyLrDcbSROqQs/Vy2ETn3WJ4WE/5bHP/yc/EDIxhLolImI5/UlwWqQJprLKu0kp+ZQVVYh2m4yZTaGva3aaVYH8hY4nhWkfLPpbCmaKek0x7HK6w1lkW0Df2FKdAC4iZjk3Ma5c3TDRNlFUhDJvAbKHM5sAN3svUASg70qeXY1oKUbdRi3d3NgXLv+tWBTz/TVqmD4dApVtaLxqXptVMDZVhOXSd01tsCylFfjP2IX0IDZ5+8YdqENJF0tAKtcThrFF5vQLWwQulSVkzy1Nbn0eIwtsisvihz0sfyvWTyncXCmqudArJaJi+JhTV2XiIKPsYprcwkEwkzPgQXSLtroBbT0PbvNrcxUBVWLO2WSXsvlE9tS0pA4rPZ/V+IORNwgTLFRXGSCy4eQWHN0U49OS2Tb067U3nfYd6isfVpsu9JFj31mgt0qzpNMgP7k5Ld6xJN/8RLOT1w/21v6sf+oO3AXR7uht4pi+S9++rDwzmNjSnbaSoic5PowL/Gd2plVhRFURRFURRFURRFURRFURRFURRFURRFURRF+Zn4ByWZzx6sbY5vAAAAAElFTkSuQmCC'></center>
+]]
+
+Version = [[
+    <center><b>Simple Anti-Aliasing v1.0</b></center>
+]]
+
+Description = [[
+    <h3 style="line-height: 0.5;" >ACT Simple Anti-Aliasing</h3>
+    <p>Version 1.0 | By Abi Yasid Al'Majid</p>
+    <p>Smooths out jagged edges by detecting high-contrast pixels and blending them along the edge line.</p>
+    <br>
+]]
+
+function Create()
+    InImage = self:AddInput("Image", "Input", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+
+    InLogo = self:AddInput(ACTLogo, "Logo", {
+        LINKID_DataType = "Text",
+        INPID_InputControl = "LabelControl",
+        LBLC_MultiLine = true,
+        INP_External = false,
+        INP_Passive = true,
+        IC_NoLabel = true,
+        IC_NoReset = true,
+        IC_ControlPage = -1,
+    })
+
+    InVersion = self:AddInput(Version, "Version", {
+        LINKID_DataType = "Text",
+        INPID_InputControl = "LabelControl",
+        LBLC_MultiLine = true,
+        INP_External = false,
+        INP_Passive = true,
+        IC_NoLabel = true,
+        IC_NoReset = true,
+        IC_ControlPage = -1,
+    })
+
+    InViewMode = self:AddInput("View Mode", "ViewMode", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ComboControl",
+        INP_Default = 0.0,
+        INP_Integer = true,
+        { CCS_AddString = "Final", },
+        { CCS_AddString = "Edge Mask", },
+    })
+
+    InThreshold = self:AddInput("Threshold", "Threshold", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_MinAllowed = 0.0,
+        INP_MaxAllowed = 1.0,
+        INP_Default = 0.1,
+    })
+
+    InLimit = self:AddInput("Max Search Limit", "SearchLimit", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Integer = true,
+        INP_Default = 12,
+        INP_MinAllowed = 1,
+        INP_MaxAllowed = 32,
+    })
+
+    self:AddControlPage("Info")
+    InDescription = self:AddInput(Description, "Description", {
+        LINKID_DataType = "Text",
+        INPID_InputControl = "LabelControl",
+        LBLC_MultiLine = true,
+        INP_External = false,
+        INP_Passive = true,
+        IC_NoLabel = true,
+        IC_NoReset = true,
+    })
+
+    InRepository = self:AddInput("ACT Projects Repository", "ACTRepository", {
+        LINKID_DataType    = "Number",
+        INPID_InputControl = "ButtonControl",
+        BTNCS_Execute      = [=[
+            local url = "https://github.com/AbiYasidAlMajid/ACT-Projects"
+            bmd.openurl(url)
+        ]=],
+        IC_NoLabel         = true,
+        IC_NoReset         = true,
+        ICD_Width          = 0.5,
+    })
+
+    InSocials = self:AddInput("Socials", "Socials", {
+        LINKID_DataType    = "Number",
+        INPID_InputControl = "ButtonControl",
+        BTNCS_Execute      = [=[
+            local url = "https://linktr.ee/abiyasidalmajid"
+            bmd.openurl(url)
+        ]=],
+        IC_NoLabel         = true,
+        IC_NoReset         = true,
+        ICD_Width          = 0.5,
+    })
+
+    OutImage = self:AddOutput("Output", "Output", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+end
+
+function Process(req)
+    local src = InImage:GetValue(req)
+    local thresh = InThreshold:GetValue(req).Value
+    local limit = InLimit:GetValue(req).Value
+    local view = InViewMode:GetValue(req).Value
+
+    if not src then return end
+
+    local texA = Image({ IMG_Like = src })
+    local texB = Image({ IMG_Like = src })
+    local dst = Image({ IMG_Like = src })
+
+    -- STEP 1: SEED
+    local nodeSeed = DVIPComputeNode(req, "SeedKernel", SimpleAA_Source, "SimpleAA_Params", SimpleAA_Params)
+    if not nodeSeed then
+        OutImage:Set(req, src)
+        return
+    end
+
+    local pBlock = nodeSeed:GetParamBlock(SimpleAA_Params)
+    pBlock.threshold = thresh
+    pBlock.iter_limit = limit
+    pBlock.srcsize[0] = src.DataWindow:Width()
+    pBlock.srcsize[1] = src.DataWindow:Height()
+    nodeSeed:SetParamBlock(pBlock)
+
+    nodeSeed:AddSampler("RowSampler", TEX_FILTER_MODE_POINT, TEX_ADDRESS_MODE_CLAMP, TEX_NORMALIZED_COORDS_FALSE)
+    nodeSeed:AddInput("src", src)
+    nodeSeed:AddOutput("dst", texA)
+    nodeSeed:RunSession(req)
+
+    -- STEP 2: GROW
+    local curr_in = texA
+    local curr_out = texB
+
+    for i = 1, limit do
+        local nodeGrow = DVIPComputeNode(req, "GrowKernel", SimpleAA_Source, "SimpleAA_Params", SimpleAA_Params)
+        nodeGrow:SetParamBlock(pBlock)
+        nodeGrow:AddSampler("RowSampler", TEX_FILTER_MODE_POINT, TEX_ADDRESS_MODE_CLAMP, TEX_NORMALIZED_COORDS_FALSE)
+        nodeGrow:AddInput("src_img", src)
+        nodeGrow:AddInput("prev_mask", curr_in)
+        nodeGrow:AddOutput("dst", curr_out)
+        nodeGrow:RunSession(req)
+
+        local temp = curr_in
+        curr_in = curr_out
+        curr_out = temp
+    end
+
+    -- STEP 3: PROPAGATE
+    for i = 1, limit do
+        local nodeProp = DVIPComputeNode(req, "PropagateKernel", SimpleAA_Source, "SimpleAA_Params", SimpleAA_Params)
+        nodeProp:SetParamBlock(pBlock)
+        nodeProp:AddSampler("RowSampler", TEX_FILTER_MODE_POINT, TEX_ADDRESS_MODE_CLAMP, TEX_NORMALIZED_COORDS_FALSE)
+        nodeProp:AddInput("prev_mask", curr_in)
+        nodeProp:AddOutput("dst", curr_out)
+        nodeProp:RunSession(req)
+
+        local temp = curr_in
+        curr_in = curr_out
+        curr_out = temp
+    end
+
+    -- VIEW MODE: EDGE MASK OVERLAY
+    if view == 1 then
+        local nodeOverlay = DVIPComputeNode(req, "OverlayKernel", SimpleAA_Source, "SimpleAA_Params", SimpleAA_Params)
+        nodeOverlay:SetParamBlock(pBlock)
+        nodeOverlay:AddSampler("RowSampler", TEX_FILTER_MODE_POINT, TEX_ADDRESS_MODE_CLAMP, TEX_NORMALIZED_COORDS_FALSE)
+        nodeOverlay:AddInput("src_img", src)
+        nodeOverlay:AddInput("mask", curr_in)
+        nodeOverlay:AddOutput("dst", dst)
+        nodeOverlay:RunSession(req)
+        OutImage:Set(req, dst)
+        return
+    end
+
+    -- STEP 4: BLEND
+    local nodeBlend = DVIPComputeNode(req, "BlendKernel", SimpleAA_Source, "SimpleAA_Params", SimpleAA_Params)
+    nodeBlend:SetParamBlock(pBlock)
+    nodeBlend:AddSampler("RowSampler", TEX_FILTER_MODE_POINT, TEX_ADDRESS_MODE_CLAMP, TEX_NORMALIZED_COORDS_FALSE)
+    nodeBlend:AddInput("src_img", src)
+    nodeBlend:AddInput("mask", curr_in)
+    nodeBlend:AddOutput("dst", dst)
+    nodeBlend:RunSession(req)
+
+    OutImage:Set(req, dst)
+end
