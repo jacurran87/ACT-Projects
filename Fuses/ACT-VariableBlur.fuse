@@ -1,0 +1,431 @@
+--[[--
+ACT-VariableBlur.fuse
+Author: Abi Yasid Al'Majid
+License: MIT
+--]] --
+
+local FuseName = "Variable Blur"
+local FuseVersion = "1.0"
+local FuseAuthor = "Abi Yasid Al'Majid"
+local FuseDescription = "A Gaussian blur filter that supports blur map input to enable variable blur distribution across the image."
+
+FuRegisterClass("VariableBlur", CT_Tool, {
+    REGS_Name = FuseName,
+    REGS_Category = "ACTProjects\\Blur",
+    REGS_OpIconString = "ACT-VrBl",
+    REGS_OpDescription = "A Gaussian blur filter that supports blur map input to enable variable blur distribution across the image",
+    REG_NoObjMatCtrls = true,
+    REG_NoMotionBlurCtrls = true,
+    REG_Fuse_NoEdit = true,
+    REG_Fuse_NoReload = true,
+    REG_Version = 1.0,
+})
+
+ACTVrBl_BlurPassParams = [[
+    int SrcSize[2];
+    int BlurSize;
+]]
+
+ACTVrBl_BlurHSource = [[
+    __KERNEL__ void ACTVrBl_BlurHKernel(__CONSTANTREF__ ACTVrBl_BlurPassParams *Params, __TEXTURE2D__ SourceImage, __TEXTURE2D_WRITE__ Destination)
+    {
+        DEFINE_KERNEL_ITERATORS_XY(x, y)
+        int Width = Params->SrcSize[0];
+        int Height = Params->SrcSize[1];
+
+        if (x >= Width || y >= Height) return;
+
+        int Radius = Params->BlurSize;
+        float Sigma = (float)Radius / 3.0f;
+        if (Sigma < 0.1f) Sigma = 0.1f;
+
+        float InvTwoSigmaSq = 1.0f / (2.0f * Sigma * Sigma);
+
+        float4 SumColor;
+        SumColor.x = 0.0f;
+        SumColor.y = 0.0f;
+        SumColor.z = 0.0f;
+        SumColor.w = 0.0f;
+        float WeightSum = 0.0f;
+
+        for (int i = -Radius; i <= Radius; i++) {
+            int SampleX = x + i;
+            SampleX = SampleX < 0 ? 0 : (SampleX >= Width ? Width - 1 : SampleX);
+
+            float4 SampleColor = _tex2DVecN(SourceImage, SampleX, y, 15);
+            float Weight = _expf(-(float)(i*i) * InvTwoSigmaSq);
+
+            SumColor.x += SampleColor.x * Weight;
+            SumColor.y += SampleColor.y * Weight;
+            SumColor.z += SampleColor.z * Weight;
+            SumColor.w += SampleColor.w * Weight;
+            WeightSum += Weight;
+        }
+
+        if (WeightSum > 0.0f) {
+            SumColor.x /= WeightSum;
+            SumColor.y /= WeightSum;
+            SumColor.z /= WeightSum;
+            SumColor.w /= WeightSum;
+        }
+
+        _tex2DVec4Write(Destination, x, y, SumColor);
+    }
+]]
+
+ACTVrBl_BlurVSource = [[
+    __KERNEL__ void ACTVrBl_BlurVKernel(__CONSTANTREF__ ACTVrBl_BlurPassParams *Params, __TEXTURE2D__ SourceImage, __TEXTURE2D_WRITE__ Destination)
+    {
+        DEFINE_KERNEL_ITERATORS_XY(x, y)
+        int Width = Params->SrcSize[0];
+        int Height = Params->SrcSize[1];
+
+        if (x >= Width || y >= Height) return;
+
+        int Radius = Params->BlurSize;
+        float Sigma = (float)Radius / 3.0f;
+        if (Sigma < 0.1f) Sigma = 0.1f;
+
+        float InvTwoSigmaSq = 1.0f / (2.0f * Sigma * Sigma);
+
+        float4 SumColor;
+        SumColor.x = 0.0f;
+        SumColor.y = 0.0f;
+        SumColor.z = 0.0f;
+        SumColor.w = 0.0f;
+        float WeightSum = 0.0f;
+
+        for (int j = -Radius; j <= Radius; j++) {
+            int SampleY = y + j;
+            SampleY = SampleY < 0 ? 0 : (SampleY >= Height ? Height - 1 : SampleY);
+
+            float4 SampleColor = _tex2DVecN(SourceImage, x, SampleY, 15);
+            float Weight = _expf(-(float)(j*j) * InvTwoSigmaSq);
+
+            SumColor.x += SampleColor.x * Weight;
+            SumColor.y += SampleColor.y * Weight;
+            SumColor.z += SampleColor.z * Weight;
+            SumColor.w += SampleColor.w * Weight;
+            WeightSum += Weight;
+        }
+
+        if (WeightSum > 0.0f) {
+            SumColor.x /= WeightSum;
+            SumColor.y /= WeightSum;
+            SumColor.z /= WeightSum;
+            SumColor.w /= WeightSum;
+        }
+
+        _tex2DVec4Write(Destination, x, y, SumColor);
+    }
+]]
+
+ACTVrBl_BlurHBMSource = [[
+    __KERNEL__ void ACTVrBl_BlurHKernelBM(__CONSTANTREF__ ACTVrBl_BlurPassParams *Params, __TEXTURE2D__ SourceImage, __TEXTURE2D__ BlurMapImage, __TEXTURE2D_WRITE__ Destination)
+    {
+        DEFINE_KERNEL_ITERATORS_XY(x, y)
+        int Width = Params->SrcSize[0];
+        int Height = Params->SrcSize[1];
+
+        if (x >= Width || y >= Height) return;
+
+        float4 CenterColor = _tex2DVecN(SourceImage, x, y, 15);
+
+        float Luminance = _tex2DVecN(BlurMapImage, x, y, 1).x;
+        Luminance = Luminance < 0.0f ? 0.0f : (Luminance > 1.0f ? 1.0f : Luminance);
+
+        int Radius = (int)_ceilf((float)Params->BlurSize * Luminance);
+
+        if (Radius < 1) {
+            _tex2DVec4Write(Destination, x, y, CenterColor);
+            return;
+        }
+
+        float Sigma = (float)Radius / 3.0f;
+        if (Sigma < 0.1f) Sigma = 0.1f;
+
+        float InvTwoSigmaSq = 1.0f / (2.0f * Sigma * Sigma);
+
+        float4 SumColor;
+        SumColor.x = 0.0f;
+        SumColor.y = 0.0f;
+        SumColor.z = 0.0f;
+        SumColor.w = 0.0f;
+        float WeightSum = 0.0f;
+
+        for (int i = -Radius; i <= Radius; i++) {
+            int SampleX = x + i;
+            SampleX = SampleX < 0 ? 0 : (SampleX >= Width ? Width - 1 : SampleX);
+
+            float4 SampleColor = _tex2DVecN(SourceImage, SampleX, y, 15);
+
+            float BlurMapWeight = _tex2DVecN(BlurMapImage, SampleX, y, 1).x;
+            BlurMapWeight = BlurMapWeight < 0.0f ? 0.0f : (BlurMapWeight > 1.0f ? 1.0f : BlurMapWeight);
+
+            float Weight = _expf(-(float)(i*i) * InvTwoSigmaSq) * BlurMapWeight;
+
+            SumColor.x += SampleColor.x * Weight;
+            SumColor.y += SampleColor.y * Weight;
+            SumColor.z += SampleColor.z * Weight;
+            SumColor.w += SampleColor.w * Weight;
+            WeightSum += Weight;
+        }
+
+        if (WeightSum > 0.0f) {
+            SumColor.x /= WeightSum;
+            SumColor.y /= WeightSum;
+            SumColor.z /= WeightSum;
+            SumColor.w /= WeightSum;
+        } else {
+            SumColor = CenterColor;
+        }
+
+        _tex2DVec4Write(Destination, x, y, SumColor);
+    }
+]]
+
+ACTVrBl_BlurVBMSource = [[
+    __KERNEL__ void ACTVrBl_BlurVKernelBM(__CONSTANTREF__ ACTVrBl_BlurPassParams *Params, __TEXTURE2D__ SourceImage, __TEXTURE2D__ BlurMapImage, __TEXTURE2D_WRITE__ Destination)
+    {
+        DEFINE_KERNEL_ITERATORS_XY(x, y)
+        int Width = Params->SrcSize[0];
+        int Height = Params->SrcSize[1];
+
+        if (x >= Width || y >= Height) return;
+
+        float4 CenterColor = _tex2DVecN(SourceImage, x, y, 15);
+
+        float Luminance = _tex2DVecN(BlurMapImage, x, y, 1).x;
+        Luminance = Luminance < 0.0f ? 0.0f : (Luminance > 1.0f ? 1.0f : Luminance);
+
+        int Radius = (int)_ceilf((float)Params->BlurSize * Luminance);
+
+        if (Radius < 1) {
+            _tex2DVec4Write(Destination, x, y, CenterColor);
+            return;
+        }
+
+        float Sigma = (float)Radius / 3.0f;
+        if (Sigma < 0.1f) Sigma = 0.1f;
+
+        float InvTwoSigmaSq = 1.0f / (2.0f * Sigma * Sigma);
+
+        float4 SumColor;
+        SumColor.x = 0.0f;
+        SumColor.y = 0.0f;
+        SumColor.z = 0.0f;
+        SumColor.w = 0.0f;
+        float WeightSum = 0.0f;
+
+        for (int j = -Radius; j <= Radius; j++) {
+            int SampleY = y + j;
+            SampleY = SampleY < 0 ? 0 : (SampleY >= Height ? Height - 1 : SampleY);
+
+            float4 SampleColor = _tex2DVecN(SourceImage, x, SampleY, 15);
+
+            float BlurMapWeight = _tex2DVecN(BlurMapImage, x, SampleY, 1).x;
+            BlurMapWeight = BlurMapWeight < 0.0f ? 0.0f : (BlurMapWeight > 1.0f ? 1.0f : BlurMapWeight);
+
+            float Weight = _expf(-(float)(j*j) * InvTwoSigmaSq) * BlurMapWeight;
+
+            SumColor.x += SampleColor.x * Weight;
+            SumColor.y += SampleColor.y * Weight;
+            SumColor.z += SampleColor.z * Weight;
+            SumColor.w += SampleColor.w * Weight;
+            WeightSum += Weight;
+        }
+
+        if (WeightSum > 0.0f) {
+            SumColor.x /= WeightSum;
+            SumColor.y /= WeightSum;
+            SumColor.z /= WeightSum;
+            SumColor.w /= WeightSum;
+        } else {
+            SumColor = CenterColor;
+        }
+
+        _tex2DVec4Write(Destination, x, y, SumColor);
+    }
+]]
+
+ACTLogo = [[
+    <center><img width="300" src='data:image/png;base64, iVBORw0KGgoAAAANSUhEUgAAASwAAAAsCAYAAADfCoXBAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAOdEVYdFNvZnR3YXJlAEZpZ21hnrGWYwAACaRJREFUeAHtnf9127YTwM993/+/7gRGJogzQZgJ6k4QdYIoE4iZwM4EUidIMoGYCexMQHaCuBNccQUUsTJwOJAgJTn3eQ/PeSKAw8/D4QAyAIqiKIqiKIqiKIqiKIqiKIqiKIqiKIqiKIqiKIqiKMpPwQWMBBEv7Z/ryOPHi4uLByiIl3djw5UNxoZLHzqSZ8NXGx6s3C6S/trHL012XRNtF6Pzsh5zEllZFeTRDZEjKMeuzi9hX3cDru86H74OaMsKhvOk7wb2DUcXG5MhxraTTW98/OJYmU3sGTM/++X+Bm6OFh1bImwB1xjnu69ACTmVDVuUc2/D20A+LU7DGjJBV6ehUNt+wkAdI7LGyNmSHHSTYBC+rrc+PwmtDUupTBzHNpDfAssi7ach7VTjQTshPy9HwZR7i3lsceS4yoIECQr1DkZg019jfkP0afsNgs9HYfVpMTEhsBw1ZGDjX+K4ydPasBTIGcPRFRYWbiecSWGhK/cnHEeLQgv5FxjHShDnBgaCrgPubahgOMYGapAani/Ghg0OUJoDWOHBIhAD3fab+m8BwzE2kMWxxkLW+qlRuJ1uYSZ8f1C5B89xjwG3VUzyPxiIH7CSgpIVUXH73kj+NcgUohSaaPPvmeeFrALyMfwB02Js2FpZr2J+CD8JyXIppWQWNpC1/eYovo+J8POoZDstZ1TspBwNjGcj9e+NsbAqkDdyluLx5mFJZfUja3j+kNIau+JJMDYEt/t+En6C8ocbpARnsyCmZgJlNRu+7AtB1A72B2IxNiBksIUFeQpFbGX51UGytWls+GxD/5SkAteI5iAuNdbSyv/Tb8FjA4R+5/wlNfPsG5Tl3zIf/LY7OaqAX9lIkXwGOUv474C69PnfAC+HVvOPAYtHsvI28LT/bgQySSE31JcHv1fA8wrKKbsG+LEQIjQ+aA4Z4KH22bXTrp1pDFA7VYH4tW2bD37R6uLZ/tvnsXmwgfQWjfNNd+Dm4bf+2PBz+6V/VoHfCto4X2FKcJhDUjRY0J14pBx0rxN5rHrxv/vtiUQ2e4gAhUHe6d4y6cjRuUGeq4M04rgH6VaJtG8P4qfGBvUHawEKZGafPiPf1rlO99G+QixwYOXL2Pbii40I5A+fXgvSb5n00hPReXYDTGHpKkHsxEA0yBINSc8MCMB9Z4ri+zRnobB82kvkj74PFQnHVULWlkl7mxGXkC4et4l8sk6f8fQU1hoL1A/dmG1RqCR66VpG9liF9RtMRLYPC51/qYo8vrPhY+QZKavUilEBbyLXUuecjUeOvBc5l/XOCW9qd0wUA+V4YJ79WITQLQ4VE7eWXgi18d4DX7/pV+Zp4cpPY/cjCPDj+1Vgi3xM7nIVqJQhPqxYQWgCfaGJZAvbQHjgxnweOzjN3J1Yp5wCjzAPUjlVIo/c/rvzISjLjqXLI50Y0mmldPv1eKh8/MLM7TY+QAZHagNaeKrIMwPumk3t4zXg/FkNjCRLYSF/MvC513DkJKwCcaiTSCnFBi63XchxIv8sGOZZyUFcgUzOSybewwBrl8bJHfPcAG/9TcU1yF/b6eDprqN0Ox2DL8AfUBEG9oc3pD/oTwNuLn8ZUs/cLSG3qvRXBRposQmzgGF0oPzAr16GiVJkIqO7vFuBTM6lMJ4IwbaX9b2dMFw7HcNaysZbSzXkU4FbhFrvBzMZaeUWFjqHeRV53PS1pd8WbiCsgbkrDgbinEVHlgTDrysYcNvyikmae1RMW5wXATnkfF0k0krlTNF/WSeFZ0IHZ4K/PkH/rGEYFTjF9cHmVUsS5GwJufsxm8BvnMlIlloT+L1jZDzHwclhwF0qHEINeQzdbm8yzHoDw+D6vYPnh4Ezwist2lHRyWkFw1jZPMjXd5eKmKOwYttBWjm/Bky7Dtw2ILTXJyvrOnBixK3CUp/Bz85chxMdPHUOc/1nIBM/pjiF9Tcch0eQW4xd4Le/mPhnN879ovXG9xf5qGOXWjlIaW2KHCBg+TfXiduAnHdM/GKfqmHqeUr3sIbQYsQngGVpQ3IwPU5yL3ty+X3PzOtk7mGh+wIJRwUTgyPvYQllUD1pTtPdTMnncpL3t6RO9ynuVNCAOBzA3OstyXtch+Azfbs/ApnTr2Y4YWpseBORk9pa5tzENon4DZwpfmfBWRK5794aOEGonnSlw4bfbfjV/kR360btopIKC9OXAYfyRAF5R3zHpKF7XNKb0jU4h94kF9hOBOp8UlR0iPF+hvs4lP8fMaXo5TdM+mVGf6TeR/yPckRnHS+Z+NxVgmMc6HD+mgqFn0Py8+Eej/T5pJz55X1UG5gSnPBDYBgw61H2LtqSKS8N3MPXg5bCup7SlpDq+TYSfsPE6zQBWRyU5+teaJm42xF12lEz6akPton0bSBNy+WNfJ1C7onJtoS9Mqe2SWuMb/Hp1ax6aLmwwJaw10ZbFG5jkdcnyR3URSJzY/+w77QVYHHoJEY3KapEug7cak7mNTlfr3yaWLrk0WmqvjY92165+E6OKQBynr+AQtBoYB4bK+svYbmI99yJDjoFkFokOsjrvz5V/9qGlUcfketb3htwp9Qd7D+DUzH53dj8vvR/oMkI8a+G7L6gkEMXGOe09asFaXdfa6A++j/sv9YQcnk0NvyesrbRKX0TeVxJrsUE8ui8/F3bd/6Kk4H9BVJOKYnkcgW6TWj/K2FYMfmEHJ6S1WcIy0R9z+bl5wGyOK4C8VdMfOobw8ii1b/FaVgdyLrDcbSROqQs/Vy2ETn3WJ4WE/5bHP/yc/EDIxhLolImI5/UlwWqQJprLKu0kp+ZQVVYh2m4yZTaGva3aaVYH8hY4nhWkfLPpbCmaKek0x7HK6w1lkW0Df2FKdAC4iZjk3Ma5c3TDRNlFUhDJvAbKHM5sAN3svUASg70qeXY1oKUbdRi3d3NgXLv+tWBTz/TVqmD4dApVtaLxqXptVMDZVhOXSd01tsCylFfjP2IX0IDZ5+8YdqENJF0tAKtcThrFF5vQLWwQulSVkzy1Nbn0eIwtsisvihz0sfyvWTyncXCmqudArJaJi+JhTV2XiIKPsYprcwkEwkzPgQXSLtroBbT0PbvNrcxUBVWLO2WSXsvlE9tS0pA4rPZ/V+IORNwgTLFRXGSCy4eQWHN0U49OS2Tb067U3nfYd6isfVpsu9JFj31mgt0qzpNMgP7k5Ld6xJN/8RLOT1w/21v6sf+oO3AXR7uht4pi+S9++rDwzmNjSnbaSoic5PowL/Gd2plVhRFURRFURRFURRFURRFURRFURRFURRFURRF+Zn4ByWZzx6sbY5vAAAAAElFTkSuQmCC'></center>
+]]
+
+local VersionUI = string.format([[
+    <center><b>%s v%s</b></center>
+]], FuseName, FuseVersion)
+
+local DescriptionUI = string.format([[
+    <h3 style="line-height: 0.5;" >ACT %s</h3>
+    <p>Version %s | By %s</p>
+    <p>%s</p>
+    <br>
+]], FuseName, FuseVersion, FuseAuthor, FuseDescription)
+
+function Create()
+    InImage = self:AddInput("Image", "Input", {
+        LINKID_DataType = "Image",
+        LINK_Main       = 1,
+    })
+
+    InBlurMap = self:AddInput("Blur Map", "BlurMap", {
+        LINKID_DataType = "Image",
+        LINK_Main       = 2,
+        INP_Required    = false,
+    })
+
+    InLogo = self:AddInput(ACTLogo, "Logo", {
+        LINKID_DataType    = "Text",
+        INPID_InputControl = "LabelControl",
+        INP_External       = false,
+        INP_Passive        = true,
+        IC_ControlPage     = -1,
+        IC_NoLabel         = true,
+        IC_NoReset         = true,
+        LBLC_MultiLine     = true,
+    })
+
+    InVersion = self:AddInput(VersionUI, "Version", {
+        LINKID_DataType    = "Text",
+        INPID_InputControl = "LabelControl",
+        INP_External       = false,
+        INP_Passive        = true,
+        IC_ControlPage     = -1,
+        IC_NoLabel         = true,
+        IC_NoReset         = true,
+        LBLC_MultiLine     = true,
+    })
+
+    InBlurSize = self:AddInput("Blur Size", "BlurSize", {
+        LINKID_DataType    = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Integer        = true,
+        INP_Default        = 10.0,
+        INP_MinAllowed     = 0.0,
+        INP_MaxScale       = 100.0,
+    })
+
+    self:AddControlPage("Info")
+
+    InDescription = self:AddInput(DescriptionUI, "Description", {
+        LINKID_DataType    = "Text",
+        INPID_InputControl = "LabelControl",
+        INP_External       = false,
+        INP_Passive        = true,
+        IC_NoLabel         = true,
+        IC_NoReset         = true,
+        LBLC_MultiLine     = true,
+    })
+
+    InRepository = self:AddInput("ACT Projects Repository", "ACTRepository", {
+        LINKID_DataType    = "Number",
+        INPID_InputControl = "ButtonControl",
+        ICD_Width          = 0.5,
+        IC_NoLabel         = true,
+        IC_NoReset         = true,
+        BTNCS_Execute      = [=[
+            local url = "https://github.com/AbiYasidAlMajid/ACT-Projects"
+            bmd.openurl(url)
+        ]=],
+    })
+
+    InSocials = self:AddInput("Socials", "Socials", {
+        LINKID_DataType    = "Number",
+        INPID_InputControl = "ButtonControl",
+        ICD_Width          = 0.5,
+        IC_NoLabel         = true,
+        IC_NoReset         = true,
+        BTNCS_Execute      = [=[
+            local url = "https://linktr.ee/abiyasidalmajid"
+            bmd.openurl(url)
+        ]=],
+    })
+
+    OutImage = self:AddOutput("Output", "Output", {
+        LINKID_DataType = "Image",
+        LINK_Main       = 1,
+    })
+end
+
+function Process(req)
+    local SourceImage = InImage:GetValue(req)
+    if SourceImage == nil then return end
+
+    local BlurMapImage = InBlurMap:GetValue(req)
+    local BlurSizeValue = InBlurSize:GetValue(req).Value
+
+    if BlurSizeValue < 1 then
+        OutImage:Set(req, SourceImage)
+        return
+    end
+
+    local ImageWidth = SourceImage.DataWindow:Width()
+    local ImageHeight = SourceImage.DataWindow:Height()
+
+    -- PASS 1: Horizontal Blur
+    local BlurHorizontal = Image({ IMG_Like = SourceImage })
+    local NodeHorizontal
+
+    if BlurMapImage ~= nil then
+        NodeHorizontal = DVIPComputeNode(req, "ACTVrBl_BlurHKernelBM", ACTVrBl_BlurHBMSource, "ACTVrBl_BlurPassParams", ACTVrBl_BlurPassParams)
+    else
+        NodeHorizontal = DVIPComputeNode(req, "ACTVrBl_BlurHKernel", ACTVrBl_BlurHSource, "ACTVrBl_BlurPassParams", ACTVrBl_BlurPassParams)
+    end
+
+    if NodeHorizontal == nil then
+        OutImage:Set(req, SourceImage)
+        return
+    end
+
+    do
+        local ParamBlock = NodeHorizontal:GetParamBlock(ACTVrBl_BlurPassParams)
+        ParamBlock.SrcSize[0] = ImageWidth
+        ParamBlock.SrcSize[1] = ImageHeight
+        ParamBlock.BlurSize = BlurSizeValue
+
+        NodeHorizontal:SetParamBlock(ParamBlock)
+        NodeHorizontal:AddInput("SourceImage", SourceImage)
+
+        if BlurMapImage ~= nil then
+            NodeHorizontal:AddInput("BlurMapImage", BlurMapImage)
+        end
+
+        NodeHorizontal:AddOutput("Destination", BlurHorizontal)
+        NodeHorizontal:RunSession(req)
+    end
+
+    -- PASS 2: Vertical Blur
+    local DestinationImage = Image({ IMG_Like = SourceImage })
+    local NodeVertical
+
+    if BlurMapImage ~= nil then
+        NodeVertical = DVIPComputeNode(req, "ACTVrBl_BlurVKernelBM", ACTVrBl_BlurVBMSource, "ACTVrBl_BlurPassParams", ACTVrBl_BlurPassParams)
+    else
+        NodeVertical = DVIPComputeNode(req, "ACTVrBl_BlurVKernel", ACTVrBl_BlurVSource, "ACTVrBl_BlurPassParams", ACTVrBl_BlurPassParams)
+    end
+
+    if NodeVertical == nil then
+        OutImage:Set(req, BlurHorizontal)
+        return
+    end
+
+    do
+        local ParamBlock = NodeVertical:GetParamBlock(ACTVrBl_BlurPassParams)
+        ParamBlock.SrcSize[0] = ImageWidth
+        ParamBlock.SrcSize[1] = ImageHeight
+        ParamBlock.BlurSize = BlurSizeValue
+
+        NodeVertical:SetParamBlock(ParamBlock)
+        NodeVertical:AddInput("SourceImage", BlurHorizontal)
+
+        if BlurMapImage ~= nil then
+            NodeVertical:AddInput("BlurMapImage", BlurMapImage)
+        end
+
+        NodeVertical:AddOutput("Destination", DestinationImage)
+        NodeVertical:RunSession(req)
+    end
+
+    OutImage:Set(req, DestinationImage)
+end
