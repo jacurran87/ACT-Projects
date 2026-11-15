@@ -5,7 +5,7 @@ License: MIT
 --]] --
 
 local FuseName = "Lens Blur"
-local FuseVersion = "1.0"
+local FuseVersion = "1.3"
 local FuseAuthor = "Abi Yasid Al'Majid"
 local FuseDescription = "A blur filter that simulates realistic depth of field and bokeh effects. This tool offers customization of the bokeh shape and features built-in chromatic aberration to mimic real-world lens imperfections with support for both blur maps or depth maps to enables precise variable blur distribution."
 
@@ -18,7 +18,7 @@ FuRegisterClass("LensBlur", CT_Tool, {
     REG_NoMotionBlurCtrls = true,
     REG_Fuse_NoEdit = true,
     REG_Fuse_NoReload = true,
-    REG_Version = 1.0,
+    REG_Version = 1.3,
 })
 
 ACTLnBL_Params = [[
@@ -46,6 +46,29 @@ ACTLnBL_Params = [[
     float FocusPosition;
     float FocalRegion;
     float FocusTransition;
+
+    int SrcOrigin[2];
+    int SrcFullSize[2];
+    int MapSize[2];
+    int MapOrigin[2];
+    int MapFullSize[2];
+    int FocusSource;
+    float FocusPoint[2];
+    float ManualFocus;
+    int SampleArea;
+    int NearWhite;
+    float SharpRange;
+    float Falloff;
+    float DepthResponse;
+    float ForegroundAmount;
+    float BackgroundAmount;
+    int Samples;
+    float AspectX;
+    float AspectY;
+    float ApertureArea;
+    float TapX[256];
+    float TapY[256];
+    float TapWeight[256];
 ]]
 
 ACTLnBl_Source = [[
@@ -89,19 +112,19 @@ ACTLnBl_Source = [[
         float AspectX = (Params->Anamorphism > 0.0f) ? Aspect : 1.0f;
         float AspectY = (Params->Anamorphism < 0.0f) ? Aspect : 1.0f;
 
-        int RadiusX = (int)_ceil(Radius / AspectX);
-        int RadiusY = (int)_ceil(Radius / AspectY);
+        int RadiusX = (int)_ceilf(Radius / AspectX);
+        int RadiusY = (int)_ceilf(Radius / AspectY);
 
         float AngleRad = Params->LensAngle * 3.14159265359f / 180.0f;
         float Segment = 2.0f * 3.14159265359f / (float)Params->LensSides;
-        float CosPiOverN = cos(3.14159265359f / (float)Params->LensSides);
+        float CosPiOverN = _cosf(3.14159265359f / (float)Params->LensSides);
 
         for (int dy = -RadiusY; dy <= RadiusY; dy++) {
             for (int dx = -RadiusX; dx <= RadiusX; dx++) {
 
                 float ScaledDx = (float)dx * AspectX;
                 float ScaledDy = (float)dy * AspectY;
-                float NeighborDist = sqrt(ScaledDx * ScaledDx + ScaledDy * ScaledDy);
+                float NeighborDist = _sqrtf(ScaledDx * ScaledDx + ScaledDy * ScaledDy);
 
                 float NeighborRadius = Params->BlurSize;
                 float NeighborFinalDist = 0.0f;
@@ -110,10 +133,10 @@ ACTLnBl_Source = [[
                     if (Params->LensType == 0) {
                         NeighborFinalDist = NeighborDist;
                     } else {
-                        float NeighborAngle = atan2(-ScaledDy, -ScaledDx) + AngleRad;
-                        NeighborAngle = NeighborAngle - Segment * floor(NeighborAngle / Segment) - Segment / 2.0f;
+                        float NeighborAngle = _atan2f(-ScaledDy, -ScaledDx) + AngleRad;
+                        NeighborAngle = NeighborAngle - Segment * _floorf(NeighborAngle / Segment) - Segment / 2.0f;
 
-                        float NeighborDistPoly = NeighborDist * cos(NeighborAngle) / CosPiOverN;
+                        float NeighborDistPoly = NeighborDist * _cosf(NeighborAngle) / CosPiOverN;
                         NeighborFinalDist = (NeighborDistPoly * (1.0f - Params->LensShape)) + (NeighborDist * Params->LensShape);
                     }
                 }
@@ -269,19 +292,19 @@ ACTLnBl_SourceBM = [[
         float AspectX = (Params->Anamorphism > 0.0f) ? Aspect : 1.0f;
         float AspectY = (Params->Anamorphism < 0.0f) ? Aspect : 1.0f;
 
-        int RadiusX = (int)_ceil(Radius / AspectX);
-        int RadiusY = (int)_ceil(Radius / AspectY);
+        int RadiusX = (int)_ceilf(Radius / AspectX);
+        int RadiusY = (int)_ceilf(Radius / AspectY);
 
         float AngleRad = Params->LensAngle * 3.14159265359f / 180.0f;
         float Segment = 2.0f * 3.14159265359f / (float)Params->LensSides;
-        float CosPiOverN = cos(3.14159265359f / (float)Params->LensSides);
+        float CosPiOverN = _cosf(3.14159265359f / (float)Params->LensSides);
 
         for (int dy = -RadiusY; dy <= RadiusY; dy++) {
             for (int dx = -RadiusX; dx <= RadiusX; dx++) {
 
                 float ScaledDx = (float)dx * AspectX;
                 float ScaledDy = (float)dy * AspectY;
-                float NeighborDist = sqrt(ScaledDx * ScaledDx + ScaledDy * ScaledDy);
+                float NeighborDist = _sqrtf(ScaledDx * ScaledDx + ScaledDy * ScaledDy);
 
                 float NeighborRadius = Params->BlurSize;
 
@@ -310,10 +333,10 @@ ACTLnBl_SourceBM = [[
                     if (Params->LensType == 0) {
                         NeighborFinalDist = NeighborDist;
                     } else {
-                        float NeighborAngle = atan2(-ScaledDy, -ScaledDx) + AngleRad;
-                        NeighborAngle = NeighborAngle - Segment * floor(NeighborAngle / Segment) - Segment / 2.0f;
+                        float NeighborAngle = _atan2f(-ScaledDy, -ScaledDx) + AngleRad;
+                        NeighborAngle = NeighborAngle - Segment * _floorf(NeighborAngle / Segment) - Segment / 2.0f;
 
-                        float NeighborDistPoly = NeighborDist * cos(NeighborAngle) / CosPiOverN;
+                        float NeighborDistPoly = NeighborDist * _cosf(NeighborAngle) / CosPiOverN;
                         NeighborFinalDist = (NeighborDistPoly * (1.0f - Params->LensShape)) + (NeighborDist * Params->LensShape);
                     }
                 }
@@ -428,6 +451,262 @@ ACTLnBl_SourceBM = [[
     }
 ]]
 
+ACTLnBl_RelativeSource = [[
+    // All coordinates are in pixels. Clamp samplers work on Metal, CUDA and OpenCL.
+    __DEVICE__ float ACTLnBl_Depth(float4 color) {
+        return _clampf(_fmaxf(color.x, _fmaxf(color.y, color.z)), 0.0f, 1.0f);
+    }
+
+    __DEVICE__ float ACTLnBl_OrientedDepth(float value, int nearWhite) {
+        return nearWhite == 1 ? value : 1.0f - value;
+    }
+
+    __DEVICE__ float ACTLnBl_ShapeDistance(float dx, float dy,
+        __CONSTANTREF__ ACTLnBL_Params *Params) {
+        float sx = dx * Params->AspectX;
+        float sy = dy * Params->AspectY;
+        float dist = _sqrtf(sx * sx + sy * sy);
+        if (Params->LensType == 0 || dist < 0.0001f) return dist;
+        float segment = 6.28318530718f / (float)Params->LensSides;
+        float angle = _atan2f(-sy, -sx) + Params->LensAngle * 0.01745329252f;
+        angle = angle - segment * _floorf(angle / segment) - segment * 0.5f;
+        float polygon = dist * _cosf(angle) / _cosf(3.14159265359f / (float)Params->LensSides);
+        return polygon * (1.0f - Params->LensShape) + dist * Params->LensShape;
+    }
+
+    __KERNEL__ void ACTLnBl_FocusKernel(
+        __CONSTANTREF__ ACTLnBL_Params *Params,
+        __TEXTURE2D__ BlurMapImage,
+        __TEXTURE2D_WRITE__ Destination)
+    {
+        DEFINE_KERNEL_ITERATORS_XY(x, y)
+        if (x != 0 || y != 0) return;
+        float focus = Params->ManualFocus;
+        if (Params->FocusSource == 1) {
+            // Point controls use full-frame normalized coordinates, like Tracker positions.
+            float px = Params->FocusPoint[0] * Params->MapFullSize[0] - Params->MapOrigin[0];
+            float py = Params->FocusPoint[1] * Params->MapFullSize[1] - Params->MapOrigin[1];
+            float total = 0.0f;
+            float count = 0.0f;
+            int area = Params->SampleArea;
+            for (int dy = -area; dy <= area; dy++) {
+                for (int dx = -area; dx <= area; dx++) {
+                    float sx = _clampf(px + dx, 0.5f, Params->MapSize[0] - 0.5f);
+                    float sy = _clampf(py + dy, 0.5f, Params->MapSize[1] - 0.5f);
+                    total += ACTLnBl_Depth(_tex2DVec4(BlurMapImage, sx, sy));
+                    count += 1.0f;
+                }
+            }
+            focus = total / count;
+        }
+        focus = ACTLnBl_OrientedDepth(focus, Params->NearWhite);
+        _tex2DVec4Write(Destination, x, y, to_float4(focus, focus, focus, 1.0f));
+    }
+
+    __KERNEL__ void ACTLnBl_PrepareKernel(
+        __CONSTANTREF__ ACTLnBL_Params *Params,
+        __TEXTURE2D__ BlurMapImage,
+        __TEXTURE2D__ FocusImage,
+        __TEXTURE2D_WRITE__ Destination)
+    {
+        DEFINE_KERNEL_ITERATORS_XY(x, y)
+        if (x >= Params->SrcSize[0] || y >= Params->SrcSize[1]) return;
+        float mx = (Params->SrcOrigin[0] + x + 0.5f) * Params->MapFullSize[0] / Params->SrcFullSize[0] - Params->MapOrigin[0];
+        float my = (Params->SrcOrigin[1] + y + 0.5f) * Params->MapFullSize[1] / Params->SrcFullSize[1] - Params->MapOrigin[1];
+        float raw = ACTLnBl_Depth(_tex2DVec4(BlurMapImage, mx, my));
+        float depth = raw;
+        float blur = 1.0f;
+        float side = 0.0f;
+        if (Params->Method == 3) {
+            depth = ACTLnBl_OrientedDepth(raw, Params->NearWhite);
+            float focus = Params->FocusSource == 1 ? _tex2DVec4(FocusImage, 0.5f, 0.5f).x : ACTLnBl_OrientedDepth(Params->ManualFocus, Params->NearWhite);
+            float delta = depth - focus;
+            float amount = delta > 0.0f ? Params->ForegroundAmount : Params->BackgroundAmount;
+            float distance = _fmaxf(_fabs(delta) - Params->SharpRange * 0.5f, 0.0f);
+            blur = _powf(_clampf(distance / _fmaxf(Params->Falloff, 0.0001f), 0.0f, 1.0f), Params->DepthResponse);
+            blur = _clampf(blur * amount, 0.0f, 1.0f);
+            side = delta > 0.0f ? 1.0f : -1.0f;
+            if (distance == 0.0f) side = 0.0f;
+        } else if (Params->Method > 0) {
+            blur = Params->InvertMap == 1 ? 1.0f - raw : raw;
+            if (Params->Method == 2) {
+                float distance = _fmaxf(_fabs(blur - Params->FocusPosition) - Params->FocalRegion, 0.0f);
+                blur = _clampf(distance / _fmaxf(Params->FocusTransition, 0.0001f), 0.0f, 1.0f);
+            }
+        }
+        // R: blur amount; G: oriented depth (larger = nearer); B: focus side.
+        _tex2DVec4Write(Destination, x, y, to_float4(blur, depth, side, 1.0f));
+    }
+
+    __KERNEL__ void ACTLnBl_FastKernel(
+        __CONSTANTREF__ ACTLnBL_Params *Params,
+        __TEXTURE2D__ SourceImage,
+        __TEXTURE2D__ PreparedMap,
+        __TEXTURE2D_WRITE__ Destination)
+    {
+        DEFINE_KERNEL_ITERATORS_XY(x, y)
+        if (x >= Params->SrcSize[0] || y >= Params->SrcSize[1]) return;
+        float px = x + 0.5f;
+        float py = y + 0.5f;
+        float4 source = _tex2DVec4(SourceImage, px, py);
+        float4 info = _tex2DVec4(PreparedMap, px, py);
+        if (Params->ViewMode == 1) {
+            float luma = source.x * 0.299f + source.y * 0.587f + source.z * 0.114f;
+            float mask = _fmaxf(luma - Params->HlThreshold, 0.0f) * Params->HlLevel * 50.0f;
+            _tex2DVec4Write(Destination, x, y, to_float4(mask, mask, mask, 1.0f));
+            return;
+        }
+        if (Params->ViewMode == 2) {
+            _tex2DVec4Write(Destination, x, y, to_float4(info.x, info.x, info.x, 1.0f));
+            return;
+        }
+        if (Params->ViewMode == 3) {
+            // Green = sharp; orange = foreground; blue = background.
+            float3 sharp = to_float3(0.12f, 0.85f, 0.25f);
+            float3 defocus = info.z > 0.0f ? to_float3(1.0f, 0.3f, 0.06f) : to_float3(0.12f, 0.35f, 1.0f);
+            float3 color = sharp * (1.0f - info.x) + defocus * info.x;
+            _tex2DVec4Write(Destination, x, y, to_float4(color.x, color.y, color.z, 1.0f));
+            return;
+        }
+        float radius = Params->BlurSize;
+        if (radius < 0.5f) {
+            _tex2DVec4Write(Destination, x, y, source);
+            return;
+        }
+        float localRadius = radius * info.x;
+        float tolerance = _fmaxf(Params->SharpRange * 0.5f, 0.02f);
+        float4 sum = to_float4_s(0.0f);
+        float sumWeight = 0.0f;
+        float4 nearSum = to_float4_s(0.0f);
+        float nearWeight = 0.0f;
+        float nearCoverage = 0.0f;
+        int rx = (int)_ceilf(radius / Params->AspectX);
+        int ry = (int)_ceilf(radius / Params->AspectY);
+        int gridWidth = 2 * rx + 1;
+        int count = Params->Samples > 0 ? Params->Samples : gridWidth * (2 * ry + 1);
+        for (int i = 0; i < count; i++) {
+            float ox;
+            float oy;
+            float shapeDist;
+            float areaWeight;
+            if (Params->Samples > 0) {
+                ox = Params->TapX[i] * radius;
+                oy = Params->TapY[i] * radius;
+                shapeDist = _sqrtf(((float)i + 0.5f) / (float)Params->Samples) * radius;
+                areaWeight = Params->TapWeight[i];
+            } else {
+                ox = (float)(i % gridWidth - rx);
+                oy = (float)(i / gridWidth - ry);
+                shapeDist = ACTLnBl_ShapeDistance(ox, oy, Params);
+                if (shapeDist > radius) continue;
+                areaWeight = 1.0f;
+            }
+            if (localRadius >= 0.5f) {
+                float sx = px + ox * info.x;
+                float sy = py + oy * info.x;
+                float4 sampleInfo = _tex2DVec4(PreparedMap, sx, sy);
+                // Keep foreground and background surfaces separate at silhouettes.
+                float edgeWeight = (Params->Method != 3 || _fabs(sampleInfo.y - info.y) <= tolerance) ? 1.0f : 0.0f;
+                if (edgeWeight > 0.0f) {
+                    float4 color = _tex2DVec4(SourceImage, sx, sy);
+                    float luma = color.x * 0.299f + color.y * 0.587f + color.z * 0.114f;
+                    float boost = 1.0f + _fmaxf(luma - Params->HlThreshold, 0.0f) * Params->HlLevel * 50.0f;
+                    float weight = areaWeight * boost;
+                    sum += color * weight;
+                    sumWeight += weight;
+                }
+            }
+            if (Params->Method == 3 && Params->ForegroundAmount > 0.0f) {
+                float4 neighbor = _tex2DVec4(PreparedMap, px + ox, py + oy);
+                float nr = neighbor.x * radius;
+                if (neighbor.z > 0.0f && neighbor.y > info.y + 0.0001f && nr >= 0.5f) {
+                    float coverage = _clampf(nr - shapeDist + 0.5f, 0.0f, 1.0f);
+                    if (coverage > 0.0f) {
+                        float4 color = _tex2DVec4(SourceImage, px + ox, py + oy);
+                        float weight = coverage * areaWeight / _fmaxf(nr * nr, 0.25f);
+                        float luma = color.x * 0.299f + color.y * 0.587f + color.z * 0.114f;
+                        float boost = 1.0f + _fmaxf(luma - Params->HlThreshold, 0.0f) * Params->HlLevel * 50.0f;
+                        nearCoverage += weight;
+                        nearSum += color * weight * boost;
+                        nearWeight += weight * boost;
+                    }
+                }
+            }
+        }
+        float4 result = sumWeight > 0.0f ? sum / sumWeight : source;
+        if (nearWeight > 0.0f) {
+            float4 front = nearSum / nearWeight;
+            // Integrate foreground footprint coverage, then composite premultiplied color.
+            float coverageScale = Params->Samples > 0 ? radius * radius / (float)Params->Samples : 1.0f / Params->ApertureArea;
+            float coverage = _clampf(nearCoverage * coverageScale, 0.0f, 1.0f);
+            result = front * coverage + result * (1.0f - front.w * coverage);
+        }
+        _tex2DVec4Write(Destination, x, y, result);
+    }
+    __KERNEL__ void ACTLnBl_CAFastKernel(
+        __CONSTANTREF__ ACTLnBL_Params *Params,
+        __TEXTURE2D__ SourceImage,
+        __TEXTURE2D__ PreparedMap,
+        __TEXTURE2D_WRITE__ Destination)
+    {
+        DEFINE_KERNEL_ITERATORS_XY(x, y)
+        if (x >= Params->SrcSize[0] || y >= Params->SrcSize[1]) return;
+
+        if (Params->ViewMode != 0 || _fabs(Params->CADistance) <= 0.0001f || Params->CABlend < 2) {
+            _tex2DVec4Write(Destination, x, y, _tex2DVec4(SourceImage, x + 0.5f, y + 0.5f));
+            return;
+        }
+
+        float MapValue = Params->CAUseMap == 1 ? _tex2DVec4(PreparedMap, x + 0.5f, y + 0.5f).x : 1.0f;
+
+        float2 CenterPos = to_float2(Params->CACenter[0] * Params->SrcSize[0], Params->CACenter[1] * Params->SrcSize[1]);
+        float2 UvPos = to_float2(x + 0.5f, y + 0.5f);
+        float2 Dir = UvPos - CenterPos;
+
+        int Steps = Params->CABlend;
+        float StepInv = 1.0f / (float)(Steps - 1);
+        float CAScale = Params->CADistance * 0.1f * MapValue;
+
+        float4 OutColor = to_float4_s(0.0f);
+        float SumR = 0.0f;
+        float SumG = 0.0f;
+        float SumB = 0.0f;
+        float SumA = 0.0f;
+
+        for (int i = 0; i < Steps; i++) {
+            float T = (float)i * StepInv;
+
+            float Scale = 1.0f + CAScale * (T * 2.0f - 1.0f);
+            float2 SamplePos = CenterPos + Dir * Scale;
+            float4 SampColor = _tex2DVec4(SourceImage, SamplePos.x, SamplePos.y);
+
+            float T2 = T * 2.0f;
+            float WeightR = _clampf(1.0f - _fabs(T2), 0.0f, 1.0f);
+            float WeightG = _clampf(1.0f - _fabs(T2 - 1.0f), 0.0f, 1.0f);
+            float WeightB = _clampf(1.0f - _fabs(T2 - 2.0f), 0.0f, 1.0f);
+
+            OutColor.x += SampColor.x * WeightR;
+            SumR += WeightR;
+
+            OutColor.y += SampColor.y * WeightG;
+            SumG += WeightG;
+
+            OutColor.z += SampColor.z * WeightB;
+            SumB += WeightB;
+
+            OutColor.w += SampColor.w;
+            SumA += 1.0f;
+        }
+
+        OutColor.x /= (SumR > 0.0f) ? SumR : 1.0f;
+        OutColor.y /= (SumG > 0.0f) ? SumG : 1.0f;
+        OutColor.z /= (SumB > 0.0f) ? SumB : 1.0f;
+        OutColor.w /= (SumA > 0.0f) ? SumA : 1.0f;
+
+        _tex2DVec4Write(Destination, x, y, OutColor);
+    }
+]]
+
 ACTLogo = [[
     <center><img width="300" src='data:image/png;base64, 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'></center>
 ]]
@@ -443,75 +722,61 @@ local DescriptionUI = string.format([[
     <br>
 ]], FuseName, FuseVersion, FuseAuthor, FuseDescription)
 
-function NotifyChanged(inp, param)
-    if inp == InLensType then
-        if param and param.Value then
-            local LensTypeValue = param.Value
+local function SetControlVisible(input, visible)
+    if input then input:SetAttrs({ IC_Visible = visible }) end
+end
 
-            if LensTypeValue == 0 then
-                InLensSides:SetAttrs({ IC_Visible = false })
-                InLensShape:SetAttrs({ IC_Visible = false })
-                InLensAngle:SetAttrs({ IC_Visible = false })
-            elseif LensTypeValue == 1 then
-                InLensSides:SetAttrs({ IC_Visible = true })
-                InLensShape:SetAttrs({ IC_Visible = true })
-                InLensAngle:SetAttrs({ IC_Visible = true })
-            end
-        end
+local function UpdateFocusControls(changed, parameter)
+    local function current(input)
+        if input == changed and parameter then return parameter end
+        return input and input:GetSource(self.Comp and self.Comp.CurrentTime) or nil
     end
+    local method = current(InMethod)
+    local source = current(InFocusSource)
+    local lens = current(InLensType)
+    local mode = method and method.Value or 0
+    local point = source and source.Value == 1
+    SetControlVisible(InLensSides, lens and lens.Value == 1)
+    SetControlVisible(InLensShape, lens and lens.Value == 1)
+    SetControlVisible(InLensAngle, lens and lens.Value == 1)
+    SetControlVisible(InInvertMap, mode == 1 or mode == 2)
+    SetControlVisible(InFocusPos, mode == 2)
+    SetControlVisible(InFocalRegion, mode == 2)
+    SetControlVisible(InFocusTransition, mode == 2)
+    for _, input in ipairs({ InFocusSource, InNearWhite, InSharpRange, InFalloff,
+        InDepthResponse, InForegroundAmount, InBackgroundAmount }) do
+        SetControlVisible(input, mode == 3)
+    end
+    SetControlVisible(InManualFocus, mode == 3 and not point)
+    SetControlVisible(InFocusPoint, mode == 3 and point)
+    SetControlVisible(InSampleArea, mode == 3 and point)
+    if InFocusPoint then InFocusPoint:SetAttrs({ PC_Visible = mode == 3 and point }) end
+end
 
-    if inp == InMethod then
-        if param and param.Value then
-            local MethodValue = param.Value
-
-            if MethodValue == 0 then
-                InInvertMap:SetAttrs({ IC_Visible = false })
-                InFocusPos:SetAttrs({ IC_Visible = false })
-                InFocalRegion:SetAttrs({ IC_Visible = false })
-                InFocusTransition:SetAttrs({ IC_Visible = false })
-            elseif MethodValue == 1 then
-                InInvertMap:SetAttrs({ IC_Visible = true })
-                InFocusPos:SetAttrs({ IC_Visible = false })
-                InFocalRegion:SetAttrs({ IC_Visible = false })
-                InFocusTransition:SetAttrs({ IC_Visible = false })
-            elseif MethodValue == 2 then
-                InInvertMap:SetAttrs({ IC_Visible = true })
-                InFocusPos:SetAttrs({ IC_Visible = true })
-                InFocalRegion:SetAttrs({ IC_Visible = true })
-                InFocusTransition:SetAttrs({ IC_Visible = true })
-            end
-        end
+function NotifyChanged(inp, param)
+    -- Honor the changed value even when the host has not committed it yet.
+    if inp == InLensType or inp == InMethod or inp == InFocusSource then
+        UpdateFocusControls(inp, param)
     end
 end
 
 function OnConnected(inp, old, new)
     if inp == InBlurMap then
-        local IsMapConnected = (new ~= nil)
-        local NestBlurMapping = self:FindInput("BlurMappingNest")
-
-        InCAUseMap:SetAttrs({ IC_Visible = IsMapConnected })
-        InMethod:SetAttrs({ IC_Visible = IsMapConnected })
-
-        if NestBlurMapping then
-            NestBlurMapping:SetAttrs({ IC_Visible = IsMapConnected })
-        end
-
-        if not IsMapConnected then
-            InInvertMap:SetAttrs({ IC_Visible = false })
-            InFocusPos:SetAttrs({ IC_Visible = false })
-            InFocalRegion:SetAttrs({ IC_Visible = false })
-            InFocusTransition:SetAttrs({ IC_Visible = false })
-        end
+        -- Keep Method visible so the new workflow can be set up before connecting a map.
+        SetControlVisible(InCAUseMap, new ~= nil)
+        UpdateFocusControls()
     end
 end
 
 function Create()
     InImage = self:AddInput("Image", "Input", {
+        INP_AcceptsDoD = false,
         LINKID_DataType = "Image",
         LINK_Main       = 1,
     })
 
     InBlurMap = self:AddInput("Blur Map", "BlurMap", {
+        INP_AcceptsDoD = false,
         LINKID_DataType = "Image",
         LINK_Main       = 2,
         INP_Required    = false,
@@ -547,6 +812,7 @@ function Create()
         { CCS_AddString = "Final" },
         { CCS_AddString = "Highlight Mask" },
         { CCS_AddString = "Focus Mask" },
+        { CCS_AddString = "Focus Zones" },
     })
 
     self:BeginControlNest("Blur Settings", "BlurSettingsNest", true, {})
@@ -558,6 +824,17 @@ function Create()
         INP_Default        = 10.0,
         INP_MinAllowed     = 0.0,
         INP_MaxScale       = 50.0,
+    })
+
+    InQuality = self:AddInput("Render Quality", "RenderQuality", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ComboControl",
+        INP_Integer = true,
+        INP_Default = 0,
+        { CCS_AddString = "Reference (Original)" },
+        { CCS_AddString = "Draft (32 samples)" },
+        { CCS_AddString = "Standard (96 samples)" },
+        { CCS_AddString = "High (256 samples)" },
     })
 
     InHLThreshold = self:AddInput("Highlight Threshold", "HLThreshold", {
@@ -669,7 +946,7 @@ function Create()
 
     self:EndControlNest()
 
-    self:BeginControlNest("Blur Mapping", "BlurMappingNest", true, { IC_Visible = false })
+    self:BeginControlNest("Blur / Depth Mapping", "BlurMappingNest", true, {})
 
     InMethod = self:AddInput("Method", "Method", {
         LINKID_DataType     = "Number",
@@ -677,10 +954,11 @@ function Create()
         INP_Integer         = true,
         INP_Default         = 0.0,
         INP_DoNotifyChanged = true,
-        IC_Visible          = false,
+        IC_Visible          = true,
         { CCS_AddString = "None" },
         { CCS_AddString = "Blur Map" },
-        { CCS_AddString = "Depth Map" },
+        { CCS_AddString = "Depth Map (Legacy)" },
+        { CCS_AddString = "Relative Depth" },
     })
 
     InInvertMap = self:AddInput("Invert Map", "InvertMap", {
@@ -716,6 +994,51 @@ function Create()
         INP_MinScale       = 0.0,
         INP_MaxScale       = 2.0,
         IC_Visible         = false,
+    })
+
+
+    InFocusSource = self:AddInput("Focus Source", "FocusSource", {
+        LINKID_DataType = "Number", INPID_InputControl = "ComboControl",
+        INP_Integer = true, INP_Default = 0, INP_DoNotifyChanged = true, IC_Visible = false,
+        { CCS_AddString = "Manual Depth" }, { CCS_AddString = "Depth at Point" },
+    })
+    InManualFocus = self:AddInput("Focus Depth", "FocusDepth", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 0.5, INP_MinAllowed = 0, INP_MaxAllowed = 1, IC_Visible = false,
+    })
+    InFocusPoint = self:AddInput("Focus Point", "FocusPoint", {
+        LINKID_DataType = "Point", INPID_InputControl = "OffsetControl",
+        INPID_PreviewControl = "CrosshairControl", INP_DefaultX = 0.5, INP_DefaultY = 0.5,
+        IC_Visible = false, PC_Visible = false,
+    })
+    InSampleArea = self:AddInput("Sample Area (radius in map pixels)", "SampleArea", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl", INP_Integer = true,
+        INP_Default = 1, INP_MinAllowed = 0, INP_MaxAllowed = 8, IC_Visible = false,
+    })
+    InNearWhite = self:AddInput("Depth Direction", "NearWhite", {
+        LINKID_DataType = "Number", INPID_InputControl = "ComboControl",
+        INP_Integer = true, INP_Default = 1, IC_Visible = false,
+        { CCS_AddString = "Near Is Black" }, { CCS_AddString = "Near Is White" },
+    })
+    InSharpRange = self:AddInput("Sharp Range (full width)", "SharpRange", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 0.02, INP_MinAllowed = 0, INP_MaxAllowed = 1, IC_Visible = false,
+    })
+    InFalloff = self:AddInput("Falloff", "Falloff", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 0.15, INP_MinAllowed = 0.0001, INP_MaxAllowed = 1, IC_Visible = false,
+    })
+    InDepthResponse = self:AddInput("Depth Response", "DepthResponse", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 1, INP_MinAllowed = 0.25, INP_MaxAllowed = 4, IC_Visible = false,
+    })
+    InForegroundAmount = self:AddInput("Foreground Amount", "ForegroundAmount", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 1, INP_MinAllowed = 0, INP_MaxAllowed = 2, IC_Visible = false,
+    })
+    InBackgroundAmount = self:AddInput("Background Amount", "BackgroundAmount", {
+        LINKID_DataType = "Number", INPID_InputControl = "SliderControl",
+        INP_Default = 1, INP_MinAllowed = 0, INP_MaxAllowed = 2, IC_Visible = false,
     })
 
     self:EndControlNest()
@@ -760,15 +1083,20 @@ function Create()
         LINKID_DataType = "Image",
         LINK_Main       = 1,
     })
+    UpdateFocusControls()
 end
 
-function Process(req)
+local function ProcessLegacy(req)
     local SourceImage = InImage:GetValue(req)
     if SourceImage == nil then return end
 
     local BlurMapImage = InBlurMap:GetValue(req)
 
-    local DestinationImage = Image({ IMG_Like = SourceImage })
+    -- Precalculation requests carry image metadata without renderable pixels.
+    if req:IsPreCalc() then
+        OutImage:Set(req, Image({ IMG_Like = SourceImage, IMG_NoData = true }))
+        return
+    end
 
     local NodeProcess
     if BlurMapImage ~= nil then
@@ -778,6 +1106,7 @@ function Process(req)
     end
 
     if not NodeProcess then
+        print("ACT Lens Blur: could not create the blur GPU node; returning the source image.")
         OutImage:Set(req, SourceImage)
         return
     end
@@ -816,7 +1145,9 @@ function Process(req)
 
     local TempDestination = Image({ IMG_Like = SourceImage })
 
-    NodeProcess:AddSampler("RowSampler", TEX_FILTER_MODE_POINT, TEX_ADDRESS_MODE_MIRROR, TEX_NORMALIZED_COORDS_FALSE)
+    -- Metal pixel-coordinate samplers require a clamp address mode.
+    -- Mirrored repeat prevents the GPU kernel from compiling on macOS.
+    NodeProcess:AddSampler("RowSampler", TEX_FILTER_MODE_POINT, TEX_ADDRESS_MODE_CLAMP, TEX_NORMALIZED_COORDS_FALSE)
     NodeProcess:AddInput("SourceImage", SourceImage)
 
     if BlurMapImage ~= nil then
@@ -824,8 +1155,21 @@ function Process(req)
     end
 
     NodeProcess:AddOutput("Destination", TempDestination)
-    NodeProcess:RunSession(req)
+    -- A failed GPU session leaves its output unwritten. Never publish it or
+    -- feed it to another pass: pooled GPU memory can contain unrelated frames.
+    if not NodeProcess:RunSession(req) then
+        print("ACT Lens Blur: blur GPU pass failed; returning the source image. See the Fusion Console for GPU errors.")
+        OutImage:Set(req, SourceImage)
+        return
+    end
 
+    -- Most renders do not need the second GPU pass.
+    if ParamBlock.ViewMode ~= 0 or math.abs(ParamBlock.CADistance) <= 0.0001 or ParamBlock.CABlend < 2 then
+        OutImage:Set(req, TempDestination)
+        return
+    end
+
+    local DestinationImage = Image({ IMG_Like = SourceImage })
     local NodeCA
     if BlurMapImage ~= nil then
         NodeCA = DVIPComputeNode(req, "ACTLnBl_CAKernelBM", ACTLnBl_SourceBM, "ACTLnBL_Params", ACTLnBL_Params)
@@ -835,7 +1179,7 @@ function Process(req)
 
     if NodeCA then
         NodeCA:SetParamBlock(ParamBlock)
-        NodeCA:AddSampler("RowSampler", TEX_FILTER_MODE_LINEAR, TEX_ADDRESS_MODE_MIRROR, TEX_NORMALIZED_COORDS_FALSE)
+        NodeCA:AddSampler("RowSampler", TEX_FILTER_MODE_LINEAR, TEX_ADDRESS_MODE_CLAMP, TEX_NORMALIZED_COORDS_FALSE)
         NodeCA:AddInput("SourceImage", TempDestination)
 
         if BlurMapImage ~= nil then
@@ -843,10 +1187,164 @@ function Process(req)
         end
 
         NodeCA:AddOutput("Destination", DestinationImage)
-        NodeCA:RunSession(req)
+        if not NodeCA:RunSession(req) then
+            print("ACT Lens Blur: chromatic aberration GPU pass failed; returning the blurred image. See the Fusion Console for GPU errors.")
+            DestinationImage = TempDestination
+        end
     else
+        print("ACT Lens Blur: could not create the chromatic aberration GPU node; returning the blurred image.")
         DestinationImage = TempDestination
     end
 
     OutImage:Set(req, DestinationImage)
+end
+
+-- Precompute aperture taps once per request, never per pixel. No frame-dependent
+-- jitter: a stationary scene has an identical sampling pattern on every frame.
+local function FillApertureTaps(params, count)
+    local aspect = 1 + 2 * math.abs(params.Anamorphism)
+    params.AspectX = params.Anamorphism > 0 and aspect or 1
+    params.AspectY = params.Anamorphism < 0 and aspect or 1
+    local sides = math.max(3, params.LensSides)
+    local segment = 2 * math.pi / sides
+    local angle = params.LensAngle * math.pi / 180
+    local function boundary(theta)
+        if params.LensType == 0 then return 1 end
+        local a = theta + math.pi + angle
+        a = a - segment * math.floor(a / segment) - segment / 2
+        local polygon = math.cos(a) / math.cos(math.pi / sides)
+        return 1 / (polygon * (1 - params.LensShape) + params.LensShape)
+    end
+    local area = 0
+    for i = 0, 1023 do
+        local r = boundary((i + 0.5) * 2 * math.pi / 1024)
+        area = area + r * r
+    end
+    params.ApertureArea = math.pi * area / (1024 * params.AspectX * params.AspectY)
+    for i = 0, 255 do
+        local theta = i * 2.399963229728653
+        local b = boundary(theta)
+        local r = math.sqrt((i + 0.5) / math.max(count, 1))
+        params.TapX[i] = math.cos(theta) * r * b / params.AspectX
+        params.TapY[i] = math.sin(theta) * r * b / params.AspectY
+        params.TapWeight[i] = math.pi * b * b / (params.AspectX * params.AspectY * params.ApertureArea)
+    end
+end
+
+local function FloatImage(width, height)
+    return Image({ IMG_Document = self.Comp, IMG_Width = width, IMG_Height = height,
+        IMG_Depth = IMDP_128bitFloat, IMG_ProxyScale = 1,
+        { IMG_Channel = "Red" }, { IMG_Channel = "Green" },
+        { IMG_Channel = "Blue" }, { IMG_Channel = "Alpha" },
+    })
+end
+
+local function RunRelativePass(req, kernel, params, inputs, destination)
+    local node = DVIPComputeNode(req, kernel, ACTLnBl_RelativeSource, "ACTLnBL_Params", ACTLnBL_Params)
+    if not node then return false end
+    node:SetParamBlock(params)
+    node:AddSampler("RowSampler", TEX_FILTER_MODE_LINEAR, TEX_ADDRESS_MODE_CLAMP, TEX_NORMALIZED_COORDS_FALSE)
+    for _, input in ipairs(inputs) do node:AddInput(input[1], input[2]) end
+    node:AddOutput("Destination", destination)
+    if not node:RunSession(req) then
+        print("ACT Lens Blur: " .. kernel .. " failed. See the Fusion Console for GPU errors.")
+        return false
+    end
+    return true
+end
+
+function Process(req)
+    local method = InMethod:GetValue(req).Value
+    local quality = InQuality:GetValue(req).Value
+    local view = InViewMode:GetValue(req).Value
+    if method ~= 3 and quality == 0 and view ~= 3 then
+        return ProcessLegacy(req)
+    end
+    local source = InImage:GetValue(req)
+    if not source then return end
+    if req:IsPreCalc() then
+        OutImage:Set(req, Image({ IMG_Like = source, IMG_NoData = true }))
+        return
+    end
+    local map = InBlurMap:GetValue(req)
+    if method == 3 and not map then
+        print("ACT Lens Blur: Relative Depth needs a grayscale map connected to Blur Map.")
+        OutImage:Set(req, source)
+        return
+    end
+    local width = source.DataWindow:Width()
+    local height = source.DataWindow:Height()
+    if width <= 0 or height <= 0 or (map and (map.DataWindow:Width() <= 0 or map.DataWindow:Height() <= 0)) then
+        OutImage:Set(req, source)
+        return
+    end
+    -- Use this node's native parameter layout, as in the original DVIP path.
+    local setup = DVIPComputeNode(req, "ACTLnBl_FastKernel", ACTLnBl_RelativeSource, "ACTLnBL_Params", ACTLnBL_Params)
+    if not setup then OutImage:Set(req, source); return end
+    local params = setup:GetParamBlock(ACTLnBL_Params)
+    params.SrcSize[0], params.SrcSize[1] = width, height
+    params.SrcOrigin[0], params.SrcOrigin[1] = source.DataWindow.left, source.DataWindow.bottom
+    params.SrcFullSize[0], params.SrcFullSize[1] = source.Width, source.Height
+    local mapSource = map or source
+    params.MapSize[0], params.MapSize[1] = mapSource.DataWindow:Width(), mapSource.DataWindow:Height()
+    params.MapOrigin[0], params.MapOrigin[1] = mapSource.DataWindow.left, mapSource.DataWindow.bottom
+    params.MapFullSize[0], params.MapFullSize[1] = mapSource.Width, mapSource.Height
+    params.ViewMode = view
+    params.BlurSize = math.max(0, InBlurSize:GetValue(req).Value)
+    params.HlThreshold = InHLThreshold:GetValue(req).Value
+    params.HlLevel = InHLLevel:GetValue(req).Value
+    local ca = InCACenter:GetValue(req)
+    params.CACenter[0], params.CACenter[1] = ca.X, ca.Y
+    params.CADistance = InCADistance:GetValue(req).Value
+    params.CABlend = InCABlend:GetValue(req).Value
+    params.CAUseMap = InCAUseMap:GetValue(req).Value
+    params.LensType = InLensType:GetValue(req).Value
+    params.LensSides = math.max(3, InLensSides:GetValue(req).Value)
+    params.LensShape = InLensShape:GetValue(req).Value
+    params.LensAngle = InLensAngle:GetValue(req).Value
+    params.Anamorphism = InAnamorphism:GetValue(req).Value
+    params.Method = map and method or 0
+    params.InvertMap = InInvertMap:GetValue(req).Value
+    params.FocusPosition = (InFocusPos:GetValue(req).Value + 1) / 2
+    params.FocalRegion = InFocalRegion:GetValue(req).Value / 2
+    params.FocusTransition = InFocusTransition:GetValue(req).Value
+    params.FocusSource = InFocusSource:GetValue(req).Value
+    local point = InFocusPoint:GetValue(req)
+    params.FocusPoint[0], params.FocusPoint[1] = point.X, point.Y
+    params.ManualFocus = InManualFocus:GetValue(req).Value
+    params.SampleArea = math.max(0, math.min(8, math.floor(InSampleArea:GetValue(req).Value)))
+    params.NearWhite = InNearWhite:GetValue(req).Value
+    params.SharpRange = InSharpRange:GetValue(req).Value
+    params.Falloff = InFalloff:GetValue(req).Value
+    params.DepthResponse = InDepthResponse:GetValue(req).Value
+    params.ForegroundAmount = InForegroundAmount:GetValue(req).Value
+    params.BackgroundAmount = InBackgroundAmount:GetValue(req).Value
+    params.Samples = ({ [0] = 0, 32, 96, 256 })[quality] or 96
+    FillApertureTaps(params, params.Samples)
+    local focus = source -- A bound dummy texture when no focus sampling is required.
+    if method == 3 and params.FocusSource == 1 then
+        focus = FloatImage(1, 1)
+        if not RunRelativePass(req, "ACTLnBl_FocusKernel", params, {{"BlurMapImage", map}}, focus) then
+            OutImage:Set(req, source); return
+        end
+    end
+    local prepared = FloatImage(width, height)
+    if not RunRelativePass(req, "ACTLnBl_PrepareKernel", params,
+        {{"BlurMapImage", mapSource}, {"FocusImage", focus}}, prepared) then
+        OutImage:Set(req, source); return
+    end
+    local blurred = Image({ IMG_Like = source })
+    if not RunRelativePass(req, "ACTLnBl_FastKernel", params,
+        {{"SourceImage", source}, {"PreparedMap", prepared}}, blurred) then
+        OutImage:Set(req, source); return
+    end
+    if view ~= 0 or math.abs(params.CADistance) <= 0.0001 or params.CABlend < 2 then
+        OutImage:Set(req, blurred); return
+    end
+    local destination = Image({ IMG_Like = source })
+    if not RunRelativePass(req, "ACTLnBl_CAFastKernel", params,
+        {{"SourceImage", blurred}, {"PreparedMap", prepared}}, destination) then
+        destination = blurred
+    end
+    OutImage:Set(req, destination)
 end
